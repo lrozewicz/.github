@@ -36,7 +36,7 @@ on:
       gitops-app-client-id:
         description: Client ID of the GitHub App allowed to push to the GitOps repo
         type: string
-        default: GITOPS_APP_CLIENT_ID_PLACEHOLDER
+        default: Iv23lisLSmlCJFUCFckY
     secrets:
       HARBOR_USERNAME:
         required: true
