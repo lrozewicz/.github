@@ -8,6 +8,5 @@
 
 ## Checklist
 
-- [ ] The PR targets the `dev` branch
 - [ ] `docker build --target test .` passes locally
 - [ ] No secrets or personal data in the change

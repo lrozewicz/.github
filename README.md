@@ -10,7 +10,7 @@ Shared GitHub configuration for the public repositories of [@lrozewicz](https://
 | Workflow | Trigger in the app repo | What it does |
 |---|---|---|
 | `pr.yml` | `pull_request` | `docker build --target test`, runtime image build, Trivy (fails on fixable CRITICAL). No secrets, nothing is pushed. |
-| `deploy.yml` | `push` to `dev` / `main` | Builds the image once per git tree (tag = `HEAD^{tree}`), pushes it to Harbor, scans it, tags it `dev-<tree>` / `prod-<tree>` and commits that tag to `platform-gitops`; Argo CD deploys it. On `main` an existing image of the same tree is promoted without a rebuild. |
+| `deploy.yml` | `push` to `main` (dev), release tag `v*` (prod) | Builds the image once per git tree (tag = `HEAD^{tree}`), pushes it to Harbor, scans it, tags it `dev-<tree>` / `prod-<tree>` (plus the release tag) and commits that tag to `platform-gitops`; Argo CD deploys it. A release tag promotes the image already built from `main` without a rebuild; it must point to a commit on `main`. |
 
 Usage: see [`app-template`](https://github.com/lrozewicz/app-template) (`.github/workflows/ci.yml`).
 

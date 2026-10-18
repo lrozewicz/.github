@@ -5,12 +5,12 @@ Thanks for your interest! Contributions of all sizes are welcome.
 ## Workflow
 
 1. For anything bigger than a small fix, open an issue first so we can agree on the approach.
-2. Fork the repository and create a branch from **`dev`** (not `main`).
+2. Fork the repository and create a branch from **`main`**.
 3. Make your change, with tests where it makes sense.
-4. Open a pull request against **`dev`**.
+4. Open a pull request against **`main`**.
 
-`dev` is deployed to a staging environment after merge; `main` is production and only receives
-changes from `dev`.
+Every merge to `main` is deployed to a staging environment. Production releases are made by the
+maintainers by tagging a commit on `main` (`v1.2.3`).
 
 ## Checks
 

@@ -1,10 +1,13 @@
 # Reusable deploy: build once, promote by tag, deploy through GitOps.
 #
+#   push to main         -> environment dev
+#   release tag (v1.2.3) -> environment prod (the tag must point to a commit on main)
+#
 # The image is tagged with the git tree SHA (HEAD^{tree}), so identical code always maps to the
-# same image. If that image already exists in Harbor (e.g. main after merging a tested dev),
-# nothing is rebuilt: the image only gets the "<environment>-<tree>" tag. Then the workflow
-# commits that tag to apps/<app>/<environment>/values.yaml in platform-gitops and Argo CD deploys it.
-# The workflow never talks to the cluster.
+# same image. If that image already exists in Harbor (a release tag on a commit that was already
+# deployed to dev), nothing is rebuilt: the image only gets the "<environment>-<tree>" tag (and the
+# release tag). Then the workflow commits that tag to apps/<app>/<environment>/values.yaml in
+# platform-gitops and Argo CD deploys it. The workflow never talks to the cluster.
 name: Deploy
 
 on:
@@ -70,6 +73,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # prod: full history, to check that the release tag is on the default branch
+          fetch-depth: ${{ inputs.environment == 'prod' && '0' || '1' }}
+
+      - name: Check that a prod release is a tag on the default branch
+        if: inputs.environment == 'prod'
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$REF_TYPE" != tag ]; then
+            echo "::error::prod is deployed only from a release tag (got $REF_TYPE $REF_NAME)"
+            exit 1
+          fi
+          [[ "$REF_NAME" =~ ^v[0-9A-Za-z._-]{1,100}$ ]] || { echo "::error::invalid release tag: $REF_NAME"; exit 1; }
+          if ! git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"; then
+            echo "::error::tag $REF_NAME does not point to a commit on $DEFAULT_BRANCH"
+            exit 1
+          fi
 
       - name: Image coordinates
         id: image
@@ -147,6 +169,13 @@ jobs:
         # --prefer-index=false: copy the manifest as is, so both tags point to the same digest.
         run: docker buildx imagetools create --prefer-index=false --tag "$DST" "$SRC"
 
+      - name: Tag image with the release version
+        if: github.ref_type == 'tag'
+        env:
+          SRC: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tree }}
+          DST: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+        run: docker buildx imagetools create --prefer-index=false --tag "$DST" "$SRC"
+
       - name: GitOps repo coordinates
         id: gitops
         env:
@@ -177,6 +206,7 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           BOT: ${{ steps.token.outputs.app-slug }}[bot]
           TAG: ${{ steps.image.outputs.env-tag }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           SOURCE: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
         run: |
           file="apps/$APP/$ENVIRONMENT/values.yaml"
@@ -195,7 +225,7 @@ jobs:
               exit 0
             fi
             yq -i '.image.tag = strenv(TAG)' "$file"
-            git commit -q -m "$APP $ENVIRONMENT: deploy ${TAG:0:16}" -m "Source: $SOURCE" -- "$file"
+            git commit -q -m "$APP $ENVIRONMENT: deploy ${VERSION:+$VERSION }${TAG:0:16}" -m "Source: $SOURCE" -- "$file"
             if git push -q origin "HEAD:$branch"; then
               echo "Deployed $TAG to $APP/$ENVIRONMENT via $(git rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
