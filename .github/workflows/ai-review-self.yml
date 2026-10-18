@@ -1,0 +1,20 @@
+# Advisory AI review of pull requests (shared workflow from github.com/lrozewicz/.github).
+# pull_request_target gives PRs from forks access to the API key, so the shared workflow never
+# checks out or runs the PR's code; it reads the diff through the API and posts one comment.
+# First-time contributors: add the label "ai-review" to run it.
+name: AI review (this repo)
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+permissions: {}
+
+jobs:
+  review:
+    uses: ./.github/workflows/ai-review.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    secrets:
+      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}

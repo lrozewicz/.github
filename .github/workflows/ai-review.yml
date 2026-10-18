@@ -1,0 +1,88 @@
+# Reusable advisory AI review of pull requests (scripts/ai_review.py).
+#
+# Called from `pull_request_target` (opened, synchronize, reopened, ready_for_review, labeled)
+# in the app repo, so it also works for PRs from forks.
+# Safe by design: PR code is never checked out or run; the diff is read through the GitHub API
+# and only sent to the model. The job can only read contents and write one PR comment.
+# The result is advisory and is not a required check.
+name: AI review
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        type: string
+        default: glm-5.3-flash
+      api-base:
+        description: OpenAI-compatible API base URL
+        type: string
+        default: https://api.z.ai/api/coding/paas/v4
+      exclude:
+        description: Newline-separated glob patterns of files not sent to the model
+        type: string
+        default: |
+          package-lock.json
+          */package-lock.json
+          composer.lock
+          */composer.lock
+          *.lock
+          go.sum
+          *.min.js
+          *.map
+      extra-exclude:
+        description: More patterns, added to `exclude` (e.g. a committed build artifact)
+        type: string
+        default: ""
+      max-diff-chars:
+        type: number
+        default: 150000
+    secrets:
+      AI_REVIEW_API_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  review:
+    # No drafts, no bot PRs (Dependabot updates are reviewed by the checks and by hand).
+    # Authors who never contributed before (possible spam, uses the API quota) are reviewed only
+    # after a maintainer adds the label "ai-review"; everyone else on every push.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type != 'Bot' &&
+      (
+        (github.event.action != 'labeled' &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) ||
+        (github.event.action == 'labeled' && github.event.label.name == 'ai-review') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ai-review'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # Only the review script from this (trusted) repository, never the PR's code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lrozewicz/.github
+          ref: main
+          path: .ai-review
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Review the diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AI_API_BASE: ${{ inputs.api-base }}
+          AI_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+          AI_MODEL: ${{ inputs.model }}
+          EXCLUDE: ${{ inputs.exclude }}
+          EXTRA_EXCLUDE: ${{ inputs.extra-exclude }}
+          MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+        run: python3 -I .ai-review/scripts/ai_review.py
