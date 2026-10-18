@@ -144,7 +144,8 @@ jobs:
         env:
           SRC: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tree }}
           DST: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.env-tag }}
-        run: docker buildx imagetools create --tag "$DST" "$SRC"
+        # --prefer-index=false: copy the manifest as is, so both tags point to the same digest.
+        run: docker buildx imagetools create --prefer-index=false --tag "$DST" "$SRC"
 
       - name: GitOps repo coordinates
         id: gitops
