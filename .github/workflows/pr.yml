@@ -43,7 +43,7 @@ jobs:
           if [ -z "$IMAGES" ]; then
             IMAGES="$(jq -cn --arg c "$CONTEXT" --arg d "$DOCKERFILE" '[{name: "app", context: $c, dockerfile: $d}]')"
           fi
-          list="$(jq -c '[.[] | {name, context: (.context // "."), dockerfile: (.dockerfile // "Dockerfile"), test: (.test // true)}]' <<< "$IMAGES")"
+          list="$(jq -c '[.[] | {name, context: (.context // "."), dockerfile: (.dockerfile // "Dockerfile"), test: (if has("test") then .test else true end)}]' <<< "$IMAGES")"
           jq -e 'length > 0 and all(.[]; .name | test("^[a-z0-9][a-z0-9-]*$"))' <<< "$list" > /dev/null \
             || { echo "::error::invalid images list"; exit 1; }
           echo "images=$list" >> "$GITHUB_OUTPUT"
