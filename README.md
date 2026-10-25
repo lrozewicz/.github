@@ -13,6 +13,13 @@ Shared GitHub configuration for the public repositories of [@lrozewicz](https://
 | `deploy.yml` | `push` to `main` (dev), release tag `v*` (prod) | Builds the image once per git tree (tag = `HEAD^{tree}`), pushes it to Harbor, scans it, tags it `dev-<tree>` / `prod-<tree>` (plus the release tag) and commits that tag to `platform-gitops`; Argo CD deploys it. A release tag promotes the image already built from `main` without a rebuild; it must point to a commit on `main`. |
 | `ai-review.yml` | `pull_request_target` | Advisory AI review: reads the PR diff through the GitHub API (never checks out or runs PR code), asks an OpenAI-compatible model (default `glm-5.3-flash`) and posts one comment, updated on later pushes. Skips drafts and bot PRs; first-time contributors need the `ai-review` label. Not a required check. |
 
+Both workflows take an optional `images` input for applications made of several processes: a JSON list
+of `{"name": "backend", "context": "backend", "dockerfile": "backend/Dockerfile", "test": true}`
+(`context`, `dockerfile`, `test` optional). Each image is built, tested (`test` target, skipped with
+`"test": false`), scanned and pushed to Harbor as `<app>/<name>`; all share one tag, which the deploy
+commit writes to `platform-gitops`. Without `images` the single image is `<app>/app`, as before.
+The status check stays `pr / checks`.
+
 Usage: see [`app-template`](https://github.com/lrozewicz/app-template) (`.github/workflows/ci.yml`).
 
 App contract:
