@@ -8,6 +8,13 @@
 # deployed to dev), nothing is rebuilt: the image only gets the "<environment>-<tree>" tag (and the
 # release tag). Then the workflow commits that tag to apps/<app>/<environment>/values.yaml in
 # platform-gitops and Argo CD deploys it. The workflow never talks to the cluster.
+#
+# One image by default (<registry>/<app>/app, Dockerfile at the repo root). An application made of
+# several processes passes `images`, a JSON list of
+#   {"name": "backend", "context": "backend", "dockerfile": "backend/Dockerfile", "test": true}
+# (`context`, `dockerfile` and `test` are optional); each is pushed as <registry>/<app>/<name> and all
+# share the same tag. Jobs: plan (checks, tree tag) -> image (one per image, no environment, so a prod
+# approval is asked once) -> deploy-<environment> (environment gate, commit to platform-gitops).
 name: Deploy
 
 on:
@@ -22,13 +29,17 @@ on:
         type: string
         default: ""
       context:
-        description: Docker build context
+        description: Docker build context (single image)
         type: string
         default: "."
       dockerfile:
-        description: Path to the Dockerfile
+        description: Path to the Dockerfile (single image)
         type: string
         default: Dockerfile
+      images:
+        description: JSON list of images to build (see the header); empty = one image "app" from context/dockerfile
+        type: string
+        default: ""
       registry:
         type: string
         default: harbor.lucasnextgen.com
@@ -52,18 +63,18 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
-    name: deploy-${{ inputs.environment }}
+  plan:
+    name: plan-${{ inputs.environment }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: ${{ inputs.environment }}
-    concurrency:
-      group: deploy-${{ github.repository }}-${{ inputs.environment }}
-      cancel-in-progress: false
+    timeout-minutes: 10
+    outputs:
+      app: ${{ steps.vars.outputs.app }}
+      images: ${{ steps.vars.outputs.images }}
+      tree: ${{ steps.vars.outputs.tree }}
+      env-tag: ${{ steps.vars.outputs.env-tag }}
     env:
       ENVIRONMENT: ${{ inputs.environment }}
       APP: ${{ inputs.app || github.event.repository.name }}
-      REGISTRY: ${{ inputs.registry }}
     steps:
       - name: Validate inputs
         run: |
@@ -94,14 +105,43 @@ jobs:
           fi
 
       - name: Image coordinates
-        id: image
+        id: vars
+        env:
+          IMAGES: ${{ inputs.images }}
+          CONTEXT: ${{ inputs.context }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
         run: |
+          if [ -z "$IMAGES" ]; then
+            IMAGES="$(jq -cn --arg c "$CONTEXT" --arg d "$DOCKERFILE" '[{name: "app", context: $c, dockerfile: $d}]')"
+          fi
+          list="$(jq -c '[.[] | {name, context: (.context // "."), dockerfile: (.dockerfile // "Dockerfile"), test: (if has("test") then .test else true end)}]' <<< "$IMAGES")"
+          jq -e 'length > 0 and all(.[]; .name | test("^[a-z0-9][a-z0-9-]*$"))' <<< "$list" > /dev/null \
+            || { echo "::error::invalid images list"; exit 1; }
           tree="$(git rev-parse 'HEAD^{tree}')"
           {
-            echo "name=$REGISTRY/$APP/app"
+            echo "app=$APP"
+            echo "images=$list"
             echo "tree=$tree"
             echo "env-tag=$ENVIRONMENT-$tree"
           } >> "$GITHUB_OUTPUT"
+
+  image:
+    name: image (${{ matrix.image.name }})
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+    env:
+      NAME: ${{ inputs.registry }}/${{ needs.plan.outputs.app }}/${{ matrix.image.name }}
+      TREE: ${{ needs.plan.outputs.tree }}
+      ENV_TAG: ${{ needs.plan.outputs.env-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -113,41 +153,39 @@ jobs:
 
       - name: Look for an existing image of this tree
         id: existing
-        env:
-          IMAGE: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tree }}
         run: |
-          if docker buildx imagetools inspect "$IMAGE" > /dev/null 2>&1; then
+          if docker buildx imagetools inspect "$NAME:$TREE" > /dev/null 2>&1; then
             echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "Image $IMAGE already exists: promoting it without a rebuild." >> "$GITHUB_STEP_SUMMARY"
+            echo "Image $NAME:$TREE already exists: promoting it without a rebuild." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Test (target "test")
-        if: steps.existing.outputs.found == 'false'
+        if: steps.existing.outputs.found == 'false' && matrix.image.test
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: ${{ inputs.context }}
-          file: ${{ inputs.dockerfile }}
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
           target: test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
 
       - name: Build and push runtime image
         if: steps.existing.outputs.found == 'false'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: ${{ inputs.context }}
-          file: ${{ inputs.dockerfile }}
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
           target: runtime
           push: true
           provenance: false
-          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tree }}
+          tags: ${{ env.NAME }}:${{ env.TREE }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}
 
       # Scanned on every deploy, also on promotion: new CVEs may have been published since the build.
       - name: Trivy scan (fails on fixable CRITICAL)
@@ -156,26 +194,35 @@ jobs:
           TRIVY_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           TRIVY_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         with:
-          image-ref: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tree }}
+          image-ref: ${{ env.NAME }}:${{ env.TREE }}
           severity: CRITICAL
           format: table
           exit-code: "1"
           ignore-unfixed: true
 
       - name: Tag image for ${{ inputs.environment }}
-        env:
-          SRC: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tree }}
-          DST: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.env-tag }}
         # --prefer-index=false: copy the manifest as is, so both tags point to the same digest.
-        run: docker buildx imagetools create --prefer-index=false --tag "$DST" "$SRC"
+        run: docker buildx imagetools create --prefer-index=false --tag "$NAME:$ENV_TAG" "$NAME:$TREE"
 
       - name: Tag image with the release version
         if: github.ref_type == 'tag'
         env:
-          SRC: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tree }}
-          DST: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
-        run: docker buildx imagetools create --prefer-index=false --tag "$DST" "$SRC"
+          VERSION: ${{ github.ref_name }}
+        run: docker buildx imagetools create --prefer-index=false --tag "$NAME:$VERSION" "$NAME:$TREE"
 
+  deploy:
+    name: deploy-${{ inputs.environment }}
+    needs: [plan, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      APP: ${{ needs.plan.outputs.app }}
+    steps:
       - name: GitOps repo coordinates
         id: gitops
         env:
@@ -205,7 +252,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           BOT: ${{ steps.token.outputs.app-slug }}[bot]
-          TAG: ${{ steps.image.outputs.env-tag }}
+          TAG: ${{ needs.plan.outputs.env-tag }}
           VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           SOURCE: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
         run: |
