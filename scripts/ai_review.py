@@ -13,6 +13,8 @@ Environment:
   AI_MODEL            e.g. openrouter/deepseek/deepseek-v4-flash-0731
   EXCLUDE, EXTRA_EXCLUDE  newline-separated glob patterns of files to skip (lock files, bundles)
   MAX_DIFF_CHARS      diff size limit sent to the model
+  AI_REASONING_EFFORT low (default) | medium | high | empty to not send the parameter
+  AI_MAX_TOKENS       completion budget including reasoning (default 32000)
   DRY_RUN=1           print the review instead of posting it
 """
 import fnmatch
@@ -103,9 +105,14 @@ def ask_model(pr_title, pr_body, diff, skipped):
                 f"do not report them as missing): {', '.join(skipped) or 'none'}\n\nDiff:\n{diff}"
             )},
         ],
-        "max_tokens": 16000,
+        # Reasoning models (e.g. DeepSeek) count their thinking against max_tokens; on a big diff
+        # they used the whole budget and returned an empty answer. Keep thinking short and the budget big.
+        "max_tokens": int(os.environ.get("AI_MAX_TOKENS", "32000")),
         "temperature": 0.2,
     }
+    effort = os.environ.get("AI_REASONING_EFFORT", "low")
+    if effort:
+        body["reasoning"] = {"effort": effort}  # OpenRouter form; LiteLLM rejects `reasoning_effort`
     req = urllib.request.Request(
         os.environ["AI_API_BASE"].rstrip("/") + "/chat/completions",
         data=json.dumps(body).encode(),
