@@ -8,9 +8,9 @@ on later pushes. Used by .github/workflows/ai-review.yml; standard library only.
 Environment:
   GH_TOKEN            token with pull-requests: write
   REPO, PR_NUMBER     owner/name and PR number
-  AI_API_BASE         e.g. https://api.z.ai/api/coding/paas/v4
+  AI_API_BASE         e.g. https://litellm.lucaswebart.com/v1
   AI_API_KEY          API key of the model provider
-  AI_MODEL            e.g. glm-5.3-flash
+  AI_MODEL            e.g. openrouter/deepseek/deepseek-v4-flash-0731
   EXCLUDE, EXTRA_EXCLUDE  newline-separated glob patterns of files to skip (lock files, bundles)
   MAX_DIFF_CHARS      diff size limit sent to the model
   DRY_RUN=1           print the review instead of posting it
