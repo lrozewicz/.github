@@ -12,11 +12,11 @@ on:
     inputs:
       model:
         type: string
-        default: glm-5.3-flash
+        default: openrouter/deepseek/deepseek-v4-flash-0731
       api-base:
         description: OpenAI-compatible API base URL
         type: string
-        default: https://api.z.ai/api/coding/paas/v4
+        default: https://litellm.lucaswebart.com/v1
       exclude:
         description: Newline-separated glob patterns of files not sent to the model
         type: string
