@@ -13,7 +13,9 @@ Environment:
   AI_MODEL            e.g. openrouter/deepseek/deepseek-v4-flash-0731
   EXCLUDE, EXTRA_EXCLUDE  newline-separated glob patterns of files to skip (lock files, bundles)
   MAX_DIFF_CHARS      diff size limit sent to the model
-  AI_REASONING_EFFORT low (default) | medium | high | empty to not send the parameter
+  AI_REASONING_EFFORT low (default) | medium | high | none | empty to not send the parameter;
+                      an empty answer is retried with reasoning switched off
+  REASONING_MAX_PROMPT_CHARS  above this prompt size reasoning is off from the start (default 120000)
   AI_MAX_TOKENS       completion budget including reasoning (default 32000)
   MAX_CONTEXT_CHARS   budget for full contents of changed files (default 200000)
   MAX_FILE_CHARS      largest single file shown in full (default 60000)
@@ -29,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+ATTEMPT_TIMEOUT_S = 420  # first try (with reasoning); later tries are fast
 MARKER = "<!-- ai-review -->"
 API = "https://api.github.com"
 
@@ -56,6 +59,8 @@ Work through these steps silently, then print only the final review.
    such point, labelled "unverified", written as a question.
 6. Rank and cut. Report at most 5 findings, most important first. Zero findings is a good result;
    never pad the list.
+
+Print only the final review: no deliberation, no dropped or retracted findings.
 
 Do NOT report: style, naming, formatting, import order, anything a linter, formatter, type checker
 or CI would catch; "consider making this configurable"; speculative performance remarks; pre-existing
@@ -197,27 +202,35 @@ def ask_model(pr_title, pr_body, diff, skipped, guide, contents, omitted):
         "max_tokens": int(os.environ.get("AI_MAX_TOKENS", "32000")),
         "temperature": 0.2,
     }
-    effort = os.environ.get("AI_REASONING_EFFORT", "low")
-    if effort:
-        body["reasoning"] = {"effort": effort}  # OpenRouter form; LiteLLM rejects `reasoning_effort`
-    req = urllib.request.Request(
-        os.environ["AI_API_BASE"].rstrip("/") + "/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {os.environ['AI_API_KEY']}", "Content-Type": "application/json"},
-    )
-    for attempt in range(3):
+    # First try with the configured reasoning effort (best quality). On a big diff the model can spend
+    # the whole budget thinking and return an empty answer after minutes; the next tries switch the
+    # reasoning off ("none"), which answers in seconds with somewhat lower quality.
+    efforts = [os.environ.get("AI_REASONING_EFFORT", "low"), "none", "none"]
+    prompt_chars = sum(len(m["content"]) for m in body["messages"])
+    if prompt_chars > int(os.environ.get("REASONING_MAX_PROMPT_CHARS", "120000")):
+        efforts = ["none", "none"]  # big prompt: thinking would eat the budget, skip it from the start
+    for attempt, effort in enumerate(efforts):
+        if effort:
+            body["reasoning"] = {"effort": effort}  # OpenRouter form; LiteLLM rejects `reasoning_effort`
+        else:
+            body.pop("reasoning", None)
+        req = urllib.request.Request(
+            os.environ["AI_API_BASE"].rstrip("/") + "/chat/completions",
+            data=json.dumps(body).encode(),
+            headers={"Authorization": f"Bearer {os.environ['AI_API_KEY']}", "Content-Type": "application/json"},
+        )
         try:
-            with urllib.request.urlopen(req, timeout=600) as r:
+            with urllib.request.urlopen(req, timeout=ATTEMPT_TIMEOUT_S if attempt == 0 else 300) as r:
                 data = json.load(r)
             content = (data["choices"][0]["message"].get("content") or "").strip()
             if content:
                 return content, data.get("usage", {})
             raise ValueError("empty answer (reasoning used the whole token budget?)")
         except (urllib.error.URLError, ValueError, KeyError, TimeoutError) as e:
-            if attempt == 2:
+            if attempt == len(efforts) - 1:
                 raise
-            print(f"model call failed ({e}), retrying", file=sys.stderr)
-            time.sleep(10 * (attempt + 1))
+            print(f"model call failed with reasoning={effort!r} ({e}), retrying", file=sys.stderr)
+            time.sleep(5)
 
 
 def main():
